@@ -1,0 +1,24 @@
+{% load static %}
+
+{% block page_meta %}
+	<title>SIESTA</title>
+	<meta name="title" content="SIESTA">
+{% endblock %}
+
+{% block content %}
+	<h2>Home Page</h2>
+	
+	<body>
+		
+		<div>This website is Sleep Indentification Enabled by Supervised Training Algorithms (SIESTA) -- a web-based method of algorithmically scoring sleep stages using electrocorticographic (ECoG) and electromyographic (EMG) data from mice.</div>
+		
+		<div>Get started by <a href={% url 'extract_features' %}>extracting features</a> from your data. 
+		These features will be run through a <a href="{% url 'score_data' %}">previously trained model</a> (or a <a href="{% url 'fit_model' %}">new model you can train on this website</a>), which will give you sleep scores.
+		If you'd like to include your own data to train a new model, you should first <a href="{% url 'merge_data' %}">merge the extracted data with your own scores.</a></div>	
+		
+		<div>This project is completely open-source -- all code is available on our GitHub.</div>
+		
+		<div>Note: This version is a prototype.</div>
+		
+	</body>
+{% endblock %}

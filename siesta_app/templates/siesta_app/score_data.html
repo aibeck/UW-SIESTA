@@ -1,0 +1,301 @@
+{% load static %}
+
+{% block page_meta %}
+	<title>SIESTA: Score Data</title>
+	<meta name="title" content="Score Data">
+{% endblock %}
+
+{% block content %}
+	<h2>Score Data</h2>
+
+	<body>
+		<div>This page will score sleep stages based on extracted features. You can either use our pre-trained model (trained using 10-second epochs) or upload a new model if needed.</div>
+
+		<div>Once completed, a .csv file with your time-matched sleep scores will be downloaded automatically.</div>
+	</body>
+
+	<form id="score-form" method="POST" enctype="multipart/form-data" action="/score-data/">
+		{% csrf_token %}
+		{{ form.as_p }}
+
+		<input type="hidden" id="model" name="model" value="">
+		<div class="radio-container">
+			<input type="radio" id="pre-trained-radio" name="model_type" value="pre-trained">
+			<label for="pre-trained-radio">Score using pre-trained model</label>
+			&nbsp;&nbsp;&nbsp;
+			<input type="radio" id="new-model-radio" name="model_type" value="new">
+			<label for="new-model-radio">Score using a new model</label>
+		</div>
+
+		<div class="form-row">
+			<label for="new-model-file" class="file-label" style="display: none;" id="new-model-prompt">Upload a new model (.file): </label>
+			<input type="file" id="new-model-file" name="new_model_file" accept=".file" style="display: none;" class="file-input">
+		</div>
+
+		<input type="submit" id="score-button" value="Score" disabled="disabled" class="submittable-button">
+	</form>
+
+	<div id="score_progress" class="progress" data-label="Scoring Progress">
+		<span id="score_value" class="value"></span>
+	</div>
+
+	{% if messages %}
+		{% for message in messages %}
+			<div class="alert alert-{{ message.tags }}">
+				{{ message }}
+			</div>
+		{% endfor %}
+	{% endif %}
+
+	<script type="text/javascript">
+		$(document).ready(function() {
+			const scoringProgress = document.querySelector('#score_progress');
+			const scoreValue = document.querySelector('#score_value');
+			const submitButton = $('#score-button');
+			const newModelFileInput = $('#new-model-file');
+			const fileInput = $('#id_csv_file');
+
+			updateSubmitButtonState();
+
+			fileInput.change(function () {
+				updateSubmitButtonState();
+			});
+
+			$('#score-form').on('change', 'input[name="model_type"]', function () {
+				const promptLabel = $('#new-model-prompt');
+
+				if ($(this).val() === 'new') {
+					newModelFileInput.show();
+					promptLabel.show();
+				} else {
+					newModelFileInput.hide();
+					promptLabel.hide();
+				}
+
+				// Enable or disable the submit button based on file and radio button selection
+				updateSubmitButtonState();
+			});
+
+			function updateSubmitButtonState() {
+				const preTrainedRadio = $('#pre-trained-radio');
+				const newModelRadio = $('#new-model-radio');
+				const newModelFile = $('#new-model-file');
+
+				if (preTrainedRadio.is(':checked')) {
+					if (fileInput[0].files.length > 0) {
+						update_progress('Model ready. Press score!');
+						submitButton.removeAttr('disabled');
+					} else {
+						update_progress('Choose a file!');
+						submitButton.attr('disabled', 'disabled');
+					}
+				} else if (newModelRadio.is(':checked')) {
+                    update_progress('Loading...');
+                    if (fileInput[0].files.length > 0) {
+                        checkNewModelCached().then(function (newModelIsCached) {
+                            if (newModelIsCached) {
+                                update_progress('New model is ready. Press score!');
+                                submitButton.removeAttr('disabled');
+                            } else {
+                                update_progress('Upload a new model.');
+                                submitButton.attr('disabled', 'disabled');
+                            }
+                        }).catch(function (error) {
+                            console.error('Error checking new model cache:', error);
+                            submitButton.attr('disabled', 'disabled');
+                        });
+                    } else {
+                        submitButton.attr('disabled', 'disabled');
+                        checkNewModelCached().then(function (newModelIsCached) {
+                            if (newModelIsCached) {
+                                update_progress('New model is ready. Choose a file!');
+                            } else {
+                                update_progress('Upload a new model.');
+                                submitButton.attr('disabled', 'disabled');
+                            }
+                        }).catch(function (error) {
+                            console.error('Error checking new model cache:', error);
+                            submitButton.attr('disabled', 'disabled');
+                        });
+                    }
+                } else {
+					update_progress('Choose a scoring method.');
+					submitButton.attr('disabled', 'disabled');
+				}
+			}
+
+            async function checkNewModelCached() {
+                const modelBlob = sessionStorage.getItem('modelBlob');
+                if (modelBlob === null) {
+                    return false;
+                }
+
+                try {
+                    const response = await fetch(`/check-file-exists/?modelBlob=${encodeURIComponent(modelBlob)}`);
+                    const data = await response.json();
+                    return data.exists;
+                } catch (error) {
+                    console.error('Error checking file existence:', error);
+                    return false;
+                }
+            }
+
+			const promptLabel = $('#new-model-prompt');
+
+			document.getElementById("pre-trained-radio").addEventListener("change", function() {
+				document.getElementById("new-model-file").style.display = "none";
+				document.getElementById("model").value = "";
+				document.getElementById("score-button").disabled = false;
+			});
+
+			document.getElementById("new-model-radio").addEventListener("change", function() {
+				document.getElementById("new-model-file").style.display = "block";
+				document.getElementById("model").style.display = "none";
+				document.getElementById("score-button").disabled = true;
+
+				const newModelPrompt = $('#new-model-prompt');
+				const newModelFile = $('#new-model-file');
+
+				if (newModelFile.val() === '') {
+					newModelPrompt.show();
+				} else {
+					newModelPrompt.hide();
+				}
+			});
+
+			$('#new-model-file').on('change', async function(e) {
+				e.preventDefault();
+
+				submitButton.attr('disabled', 'disabled');
+				update_progress('Uploading new model...');
+
+                const file = document.getElementById('new-model-file').files[0];
+                const chunkSize = 1024 * 1024 * 50; // 50MB per chunk
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                let uploadedChunks = 0;
+
+				const modelName = Math.floor(Math.random() * Date.now()).toString(36) + '.file';
+
+                for (let start = 0; start < file.size; start += chunkSize) {
+                    const chunk = file.slice(start, start + chunkSize);
+                    const formData = new FormData();
+                    formData.append('file', chunk);
+                    formData.append('chunkIndex', uploadedChunks);
+                    formData.append('totalChunks', totalChunks);
+                    formData.append('fileName', modelName);
+
+                    try {
+                        await uploadFile(formData, (loaded) => {
+                            const totalProgress = Math.min(((start + loaded) / file.size)*100, 100);
+                            update_progress('New model uploading...', totalProgress);
+                        });
+                        uploadedChunks++;
+                    } catch (error) {
+                        console.error('Error uploading chunk:', error);
+                        break;
+                    }
+                }
+
+                if (uploadedChunks === totalChunks) {
+                    sessionStorage.setItem('modelBlob', modelName);
+                    scoreValue.style.width = 100;
+                    updateSubmitButtonState();
+                } else {
+                    alert('File upload failed!');
+                    scoreValue.style.width = 0;
+                    updateSubmitButtonState();
+                }
+			});
+
+
+			(function($) {
+				let form = $('#score-form');
+				form.on('submit', function(e){
+					e.preventDefault();
+
+					let $this = $(this);
+					let method = $this.attr('method');
+					let action = $this.attr('action');
+					let formData = new FormData(this);
+
+					formData.delete('new_model_file');
+                    formData.append('modelBlob', sessionStorage.getItem('modelBlob'));
+
+					submitButton.attr('disabled', 'disabled');
+					update_progress('Processing...');
+
+					$.ajax({
+						method: method,
+						url: action,
+						data: formData,
+
+						cache: false,
+						contentType: false,
+						processData: false,
+
+						success: function(response) {
+							update_progress('Processing...');
+							submitButton.attr('disabled', 'disabled');
+							task_state_scoring(response.task_id, Date.now());
+						},
+
+						error: function (response) {
+							console.error('Error:', response);
+							update_progress('Error. Did you select a properly extracted file to score?');
+						}
+					});
+				});
+			}(jQuery));
+
+			function task_state_scoring(task_id, startTime) {
+				$.ajax({
+					method: 'GET',
+					url: {% url 'validate_task_state' %},
+					data: {'task_id': task_id},
+
+					cache: false,
+
+					success: function(response){
+
+						if (response.state != 'SUCCESS') {
+							if (response.state == 'FAILURE') {
+								update_progress('Error. Did you select a properly extracted file to score?');
+							} else {
+								var elapsedTime = Math.floor((Date.now() - startTime) / update_ms); // Calculate the elapsed time in seconds
+
+								const minutes = Math.floor(elapsedTime / 60);
+								const seconds = elapsedTime % 60;
+
+								update_progress(`Scoring, time elapsed: ${padTo2Digits(minutes)}:${padTo2Digits(seconds)}`);
+
+								setTimeout(function () {
+									task_state_scoring(task_id, startTime);
+								}, update_ms);
+							}
+						} else if (response.state == 'SUCCESS') {
+							update_progress('DONE!');
+							download_file(task_id, {% url 'download_csv' %}, 'scored_data')
+						}
+					},
+					error: function (response){
+						alert(response["responseJSON"]["error"]);
+					}
+				});
+			};
+
+			function update_progress(update_text, update_num) {
+			    update_num = Math.round(update_num);
+
+				if (update_num == 100) {
+					scoreValue.style.width = `${update_num}%`;
+					scoringProgress.setAttribute('data-label', `${update_text}`);
+				} else if (!isNaN(update_num)) {
+					scoreValue.style.width = `${update_num}%`;
+					scoringProgress.setAttribute('data-label', `${update_text} ${update_num}%`);
+				} else {
+					scoringProgress.setAttribute('data-label', `${update_text}`);
+				}
+			}
+		});
+	</script>
+{% endblock %}

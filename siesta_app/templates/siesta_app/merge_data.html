@@ -1,0 +1,110 @@
+{% load static %}
+
+{% block page_meta %}
+<title>SIESTA: Merge Data</title>
+<meta name="title" content="Merge Data">
+{% endblock %}
+
+{% block content %}
+	<h2>Merge Data</h2>
+
+	<body>
+		<div>This page take extracted data (.csv, 2d array with column names) and combine it with user-scored sleep stages (.csv, 1d array without column names), assuming they are of equal length.</div>
+		<div>Simultaneously, it will check whether the scores are numeric (i.e., 1, 2, 3) or text (AWAKE, NREM, REM). If the former, it will automatically translate it to the latter correspondingly.</div>
+		<div>Once completed, a .csv file of the combined data will downloaded automatically.</div>
+
+		<form id="merge-form" method="POST" enctype="multipart/form-data" action="{% url 'merge_data' %}">
+			{% csrf_token %}
+
+			<table>
+				<tr>
+					<td>
+						<label for="data-file">Extracted Data (.csv):</label>
+						<input type="file" id="data-file" name="data_file" accept=".csv">
+					</td>
+					<td>
+						<label for="score-file">User-Scored Sleep Stages (.csv):</label>
+						<input type="file" id="score-file" name="score_file" accept=".csv">
+					</td>
+				</tr>
+			</table>
+
+			<input type="submit" id="merge-button" value="Merge Data" disabled="disabled" class="submittable-button">
+		</form>
+
+	<div id="merge_progress" class="progress" data-label="Merging Progress">
+	</div>
+
+	<script type="text/javascript">
+		$(document).ready(function() {
+		    const mergeForm = document.getElementById('merge-form');
+            const mergeButton = document.getElementById('merge-button');
+            const mergeProgress = document.getElementById('merge_progress');
+            const dataFileInput = document.getElementById('data-file');
+            const scoreFileInput = document.getElementById('score-file');
+
+            const checkFilesChosen = () => {
+                mergeButton.disabled = !(dataFileInput.files.length && scoreFileInput.files.length);
+            };
+
+            dataFileInput.addEventListener('change', checkFilesChosen);
+            scoreFileInput.addEventListener('change', checkFilesChosen);
+
+			$('#merge-form').on('submit', async function (e) {
+				e.preventDefault();
+
+				const formData = new FormData(mergeForm);
+                const csrftoken = getCookie('csrftoken');
+                const startTime = Date.now();
+
+				timerInterval = setInterval(function () {
+					mergeProgress.setAttribute('data-label', updateTimer('Merging,', startTime));
+				}, update_ms);
+
+				try {
+					const response = await fetch('/merge-data/', {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'Accept': 'application/json',
+                            'X-CSRFToken': csrftoken,
+                        },
+                    });
+
+					clearInterval(timerInterval);
+
+                    if (response.ok) {
+                        const disposition = response.headers.get('Content-Disposition');
+                        let filename = 'merged_data.csv';
+
+                        if (disposition && disposition.indexOf('attachment') !== -1) {
+                            const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                            const matches = filenameRegex.exec(disposition);
+                            if (matches != null && matches[1]) filename = matches[1].replace(/['"]/g, '');
+                        }
+
+                        const blob = await response.blob();
+                        const downloadUrl = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = downloadUrl;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        document.body.removeChild(a);
+                        URL.revokeObjectURL(downloadUrl);
+
+                        mergeProgress.setAttribute('data-label', 'DONE!');
+                    } else {
+                        const errorData = await response.json();
+                        const errorMessage = errorData.error || 'An unknown error occurred.';
+                        mergeProgress.setAttribute('data-label', errorMessage);
+                    }
+                } catch (error) {
+                    clearInterval(timerInterval);
+                    mergeProgress.setAttribute('data-label', 'Error!');
+                    console.log('Error:', error);
+                }
+			});
+		});
+	</script>
+{% endblock %}

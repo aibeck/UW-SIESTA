@@ -1,0 +1,229 @@
+{% block page_meta %}
+	<title>SIESTA: Fit New Model</title>
+	<meta name="title" content="Fit Model">
+{% endblock %}
+
+{% block content %}
+	<div>
+	<h2>Fit New Model</h2>
+		<p>This page will fit a new model. You only need to fit a new model if you wish to use different parameters (e.g., different epoch length) or create a new model using your data and scored sleep stages. Otherwise, you can use the <a href={% url 'score_data' %}>pre-trained model</a>.</p>
+		<p>If you wish to use new training data, first <a href={% url 'extract_features' %}>extract features from your data</a>, and then add the scores to the final column of this file.</p>
+		<p>You can use as many files as you like to train the new model. Note that the more data used, the longer model training will take. (e.g., 5 hours of data will take less than a minute; 500 hours, up to an hour.)</p>
+		<p>You must include data, either the SIESTA training data or your own data, in order to train the new model. A .file containing the trained model will be automatically downloaded when completed.</p>
+	</div>
+
+	<div>
+	<h3>File Upload</h3>
+	<form id="files-upload-form" method="POST">
+	  {% csrf_token %}
+	  <label for="files">Choose file(s) for training the model (.csv):</label>
+	  <input type="file" id="files" name="files_for_training" accept=".csv" multiple>
+	</form>
+	</div>
+
+	<form id="fit-model-form" method="POST" enctype="multipart/form-data" action="/fit-model/">
+	  {% csrf_token %}
+	  <div>
+	  <h3>Model Options</h3>
+		<table>
+		  <tr>
+			<td>
+			  <label for="include_files">Include preexisting SIESTA training data?</label>
+			  <input type="checkbox" id="include_files" name="include_training_data">
+			</td>
+			<td>
+			  <div>Check this box if you wish to include preexisting SIESTA data for training a new model.</div>
+			  <div>These data used a sampling rate of 400 Hz, and an epoch length of 10s.</div>
+			</td>
+		  </tr>
+		  <tr>
+			<td>
+			  <label for="cache_model">Save new model?</label>
+			  <input type="checkbox" id="cache_model" name="cache_new_model">
+			</td>
+			<td>
+			  <div>Check this box if you wish to immediately use this model for scoring data.</div>
+			</td>
+		  </tr>
+		</table>
+	  </div>
+
+	  <div>
+		<br><input type="submit" id="fit-model-button" value="Fit model" disabled="disabled" class="submittable-button">
+	  </div>
+
+	</form>
+
+	<div id="fit_progress" class="progress" data-label="Fit Progress">
+		<span id="fit_value" class="value"></span>
+	</div>
+
+	<script type="text/javascript">
+		$(document).ready(function() {
+			const fitProgress = document.querySelector('#fit_progress');
+			const fitValue = document.querySelector('#fit_value');
+
+			$('#id_file').attr("multiple","true");
+
+			function checkFormState() {
+				const includeFilesChecked = $('#include_files').prop('checked');
+				const filesForTraining = document.getElementById('files').files;
+				if (includeFilesChecked || filesForTraining.length > 0) {
+					$('#fit-model-button').removeAttr('disabled');
+				} else {
+					$('#fit-model-button').attr('disabled', 'disabled');
+				}
+			}
+
+			$('#files-upload-form, #include_files, #files-upload-form #files').on('change', checkFormState);
+
+			$('#files-upload-form').on('change', async function(e) {
+				e.preventDefault();
+
+				$('#fit-model-button').attr('disabled', 'disabled');
+
+				const filesForTraining = document.getElementById('files').files;
+                const numFiles = filesForTraining.length;
+                const blobNames = [];
+
+				for (let i = 0; i < numFiles; i++) {
+                    const file = filesForTraining[i];
+                    const fileName = Math.floor(Math.random() * Date.now()).toString(36);
+                    blobNames.push(fileName);
+
+                    const chunkSize = 1024 * 1024 * 50;
+                    const totalChunks = Math.ceil(file.size / chunkSize);
+
+                    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                        const start = chunkIndex * chunkSize;
+                        const end = Math.min(file.size, start + chunkSize);
+                        const chunk = file.slice(start, end);
+
+                        const formData = new FormData();
+                        formData.append('file', chunk);
+                        formData.append('fileName', fileName);
+                        formData.append('chunkIndex', chunkIndex);
+                        formData.append('totalChunks', totalChunks);
+
+                        try {
+                            const response = await fetch('/upload-file/', {
+                                method: 'POST',
+                                body: formData,
+                                headers: {'X-CSRFToken': getCookie('csrftoken'),},
+                            });
+
+                            if (!response.ok) {
+                                throw new Error(`Error uploading chunk ${chunkIndex + 1} of ${file.name}`);
+                            }
+
+                            const result = await response.json();
+
+                            const progress = Math.floor((i+1)/numFiles * 100);
+                            update_progress(`${i + 1} of ${numFiles} files uploaded`, progress);
+                        } catch (error) {
+                            console.error(`Error uploading chunk ${chunkIndex + 1} of ${file.name}:`, error);
+                        }
+                    }
+
+				}
+                await updateBlobNames(blobNames);
+                update_progress('Done. Now fit model!', 100);
+				$('#fit-model-button').removeAttr('disabled');
+			});
+
+			async function updateBlobNames(blobNames) {
+                return new Promise((resolve, reject) => {
+                    $.ajax({
+                        url: '/update-blob-name/',
+                        type: "POST",
+                        data: {"blobNames": blobNames,},
+                        dataType: "json",
+                        headers: {"X-CSRFToken": getCookie("csrftoken")},
+                        success: function (response) {resolve(response);},
+                        error: function (error) {reject(error);}
+                    });
+                });
+            }
+
+			(function($) {
+				let form = $('#fit-model-form');
+				form.on('submit', function(e){
+					e.preventDefault();
+
+					let $this = $(this);
+					let method = $this.attr('method');
+					let action = $(this).attr('action');
+					let data = $this.serialize();
+
+					var form_data = new FormData(form[0]);
+
+					$.ajax({
+						method: method,
+						url: action,
+						data: form_data,
+
+						cache: false,
+						contentType: false,
+						processData: false,
+
+						success: function(response) {
+							task_state(response.task_id, Date.now());
+						},
+
+						error: function (response) {
+							alert(response["responseJSON"]["error"]);
+						}
+					});
+				});
+			} (jQuery));
+
+			function task_state(task_id, startTime) {
+				$.ajax({
+					method: 'GET',
+					url: {% url 'validate_task_state' %},
+					data: {'task_id': task_id},
+					cache: false,
+
+					success: function(response){
+						if (response.state != 'SUCCESS') {
+							if (response.state == 'FAILURE') {
+								update_progress('Failed. Did you add sleep scores to the new data?');
+							} else {
+								if (`${response.state}` == 'PENDING') {
+									update_progress('Processing...');
+								} else if (response.state == 'FITTING') {
+									var elapsedTime = Math.floor((Date.now() - startTime) / update_ms);
+									const minutes = Math.floor(elapsedTime / 60);
+									const seconds = elapsedTime % 60;
+
+									update_progress(`Fitting, time elapsed: ${padTo2Digits(minutes)}:${padTo2Digits(seconds)}`);
+								}
+								setTimeout(function () {
+									task_state(task_id, startTime);
+								}, update_ms);
+							}
+						} else if (response.state == 'SUCCESS') {
+                            update_progress('DONE!');
+                            download_file(task_id, {% url 'download_model' %}, "trained_model.file", true);
+                        }
+					},
+					error: function (response){
+						alert(response["responseJSON"]["error"]);
+					}
+				});
+			};
+
+			function update_progress(update_text, update_num) {
+				if (update_num === 100) {
+					fitValue.style.width = `${update_num}%`;
+					fitProgress.setAttribute('data-label', `${update_text}`);
+				} else if (!isNaN(update_num)) {
+					fitValue.style.width = `${update_num}%`;
+					fitProgress.setAttribute('data-label', `${update_num}% ${update_text}`);
+				} else {
+					fitProgress.setAttribute('data-label', `${update_text}`);
+				}
+			}
+		})
+	</script>
+{% endblock %}

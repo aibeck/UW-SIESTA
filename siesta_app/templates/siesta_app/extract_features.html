@@ -1,0 +1,197 @@
+{% load static %}
+{% load widget_tweaks %}
+
+{% block page_meta %}
+	<title>SIESTA: Extract Features</title>
+	<meta name="title" content="Extract Features">
+{% endblock %}
+
+{% block content %}
+	<h2>Feature Extraction</h2>
+
+	<body>
+		<div>This page will extract features to be used for sleep scoring. Please select the .edf file you wish to score and specify sampling rate of the data as well as the corresponding ECoG and EMG channels.</div>
+		<div>Features will be extracted in 10 second epochs.</div>
+		<div>Once completed, a .csv file with your features will be downloaded automatically.</div>
+	</body>
+
+	<form id="extract-upload-form" method="POST">
+		{% csrf_token %}
+	<input type="file" id='edf' name='edf' value="Select file for upload (.edf)" accept='.edf'>
+	</form>
+
+	<form id="extract-form" method="POST" action='/extract-features/'>
+		{% csrf_token %}
+		{% for hidden in form.hidden_fields %}
+		  {{ hidden }}
+		{% endfor %}
+
+		{% for field in form.visible_fields %}
+		  <div class="form-group">
+			<label for="{{ field.id_for_label }}">{{ field.label }}</label>
+			{{ field|add_class:'form-control' }}
+			{% for error in field.errors %}
+			  <span class="help-block">{{ error }}</span>
+			{% endfor %}
+		  </div>
+		{% endfor %}
+
+		<input type="submit" id="extract-button" name="extract" value="Extract Features" disabled="disabled" class="submittable-button">
+	</form>
+
+	<div id="extraction_progress" class="progress" data-label="Extraction Progress">
+		<span id="extraction_value" class="value"></span>
+	</div>
+
+	<script type="text/javascript">
+		$(document).ready(function() {
+			var notResolved = false;
+
+            $('#extract-upload-form').on('change', async function(e) {
+                e.preventDefault();
+
+                $('#extract-button').attr('disabled', 'disabled');
+
+                update_progress('File uploading...', 0);
+
+                const file = document.getElementById('edf').files[0];
+                const chunkSize = 1024 * 1024 * 50; // 50MB per chunk
+                const totalChunks = Math.ceil(file.size / chunkSize);
+                let uploadedChunks = 0;
+
+                const blobName = `${crypto.randomUUID()}.edf`;
+
+                for (let start = 0; start < file.size; start += chunkSize) {
+                    const chunk = file.slice(start, start + chunkSize);
+                    const formData = new FormData();
+                    formData.append('file', chunk);
+                    formData.append('chunkIndex', uploadedChunks);
+                    formData.append('totalChunks', totalChunks);
+                    formData.append('fileName', blobName);
+
+                    try {
+                        await uploadFile(formData, (loaded) => {
+                            const totalProgress = Math.min(((start + loaded) / file.size)*100, 100);
+                            update_progress('File uploading...', totalProgress);
+                        });
+                        uploadedChunks++;
+                    } catch (error) {
+                        console.error('Error uploading chunk:', error);
+                        break;
+                    }
+                }
+
+                if (uploadedChunks === totalChunks) {
+                    update_progress("Processing...", 100);
+                    await updateBlobName(blobName);
+                    update_progress("File uploaded successfully. Please extract features", 100);
+                    $('#extract-button').removeAttr('disabled');
+                } else {
+                    alert('File upload failed!');
+                    $('#extract-button').attr('disabled', 'disabled');
+                }
+            });
+
+            async function updateBlobName(blobName) {
+                try {
+                    const response = await $.ajax({
+                        url: '/update-blob-name/',
+                        type: 'POST',
+                        data: { blobName: blobName },
+                        dataType: 'json',
+                        headers: { 'X-CSRFToken': getCookie('csrftoken') }
+                    });
+                    return response;
+                } catch (error) {
+                    throw error;
+                }
+            }
+
+
+			(function($) {
+				let form = $('#extract-form');
+				form.on('submit', function(e){
+					e.preventDefault();
+
+					let $this = $(this);
+					let method = $this.attr('method');
+					let action = $(this).attr('action');
+					let data = $this.serialize();
+
+					var form_data = new FormData(form[0]);
+
+					var promise = $.ajax({
+						method: method,
+						url: action,
+						data: form_data,
+
+						cache: false,
+						contentType: false,
+						processData: false,
+					});
+
+					promise.then(function(response) {
+						notResolved = false;
+						task_state(response.task_id);
+					})
+					.catch(function (response) {
+						alert(response["responseJSON"]["error"]);
+					});
+				});
+			} (jQuery));
+
+			function task_state(task_id) {
+				$.ajax({
+					method: 'GET',
+					url: {% url 'validate_task_state' %},
+					data: {'task_id': task_id},
+
+					cache: false,
+
+					success: function(response){
+
+
+						if (response.state != 'SUCCESS') {
+							if (response.state == 'FAILURE') {
+								update_progress('Failed. Did you select files?');
+							} else {
+								if (`${response.state}` == 'PENDING') {
+									update_progress('Processing...');
+								} else {
+									update_progress('Extracted...', response.state);
+								}
+
+								setTimeout(function () {
+									task_state(task_id);
+								}, update_ms);
+							}
+						} else if (response.state == 'SUCCESS') {
+							update_progress('DONE!', 100);
+							download_file(task_id, {% url 'download_csv' %}, 'extracted_features')
+						}
+					},
+					error: function (response){
+						alert(response["responseJSON"]["error"]);
+					}
+				});
+			};
+
+        function update_progress(update_text, update_num) {
+            const extractProgress = document.querySelector('#extraction_progress');
+            const extractValue = document.querySelector('#extraction_value');
+
+            update_num = Math.round(update_num); // Round to nearest integer
+
+            if (update_num == 100) {
+                extractValue.style.width = `${update_num}%`;
+                extractProgress.setAttribute('data-label', `${update_text}`);
+            } else if (!isNaN(update_num)) {
+                extractValue.style.width = `${update_num}%`;
+                extractProgress.setAttribute('data-label', `${update_text} ${update_num}%`);
+            } else {
+                extractProgress.setAttribute('data-label', `${update_text}`);
+            }
+        }
+	})
+	</script>
+{% endblock %}
